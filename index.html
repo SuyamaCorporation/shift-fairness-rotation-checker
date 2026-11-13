@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>シフトローテーション公平性チェッカー</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen p-4">
+<div class="max-w-4xl mx-auto">
+  <h1 class="text-2xl font-bold text-center text-teal-700 mb-6">シフトローテーション公平性チェッカー</h1>
+
+  <div class="bg-white rounded-xl shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-700 mb-4">スタッフ登録</h2>
+    <div class="flex gap-2 mb-4">
+      <label for="staff-name" class="sr-only">スタッフ名</label>
+      <input id="staff-name" type="text" placeholder="スタッフ名" class="flex-1 border rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-teal-400">
+      <button id="add-staff-btn" aria-label="スタッフを追加" class="bg-teal-600 text-white px-4 rounded-lg hover:bg-teal-700 transition text-sm font-semibold">追加</button>
+    </div>
+    <div id="staff-list" class="flex flex-wrap gap-2 mb-2"></div>
+  </div>
+
+  <div class="bg-white rounded-xl shadow p-6 mb-6">
+    <h2 class="text-lg font-semibold text-gray-700 mb-4">週次シフト入力</h2>
+    <p class="text-xs text-gray-500 mb-3">各スタッフの1週間分のシフトをチェック（月〜日）</p>
+    <div id="shift-grid" class="overflow-x-auto"></div>
+    <button id="calc-btn" aria-label="公平性を計算" class="mt-4 w-full bg-teal-600 text-white py-2 rounded-lg font-semibold hover:bg-teal-700 transition">公平性を計算</button>
+  </div>
+
+  <div id="results" class="hidden bg-white rounded-xl shadow p-6">
+    <h2 class="text-lg font-semibold text-gray-700 mb-4">公平性スコア</h2>
+    <div id="score-cards" class="space-y-4"></div>
+    <div id="warnings" class="mt-4"></div>
+    <div id="suggestions" class="mt-4"></div>
+  </div>
+</div>
+
+<script>
+function escapeHtml(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');}
+
+const STORAGE_KEY = 'app_shift-fairness-rotation-checker';
+const DAYS = ['月','火','水','木','金','土','日'];
+const SHIFT_TYPES = ['早番','遅番','深夜','休'];
+const WEEKEND_IDX = [5, 6];
+const NIGHT_IDX = 2;
+
+function loadData() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {staff: [], shifts: {}}; } catch { return {staff: [], shifts: {}}; }
+}
+function saveData(d) { localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); }
+
+function renderStaffList() {
+  const data = loadData();
+  const container = document.getElementById('staff-list');
+  container.innerHTML = '';
+  data.staff.forEach((name, idx) => {
+    const tag = document.createElement('span');
+    tag.className = 'flex items-center gap-1 bg-teal-100 text-teal-800 text-sm px-3 py-1 rounded-full';
+    const nameSpan = document.createElement('span');
+    nameSpan.textContent = name;
+    const del = document.createElement('button');
+    del.className = 'text-teal-500 hover:text-red-500 font-bold leading-none';
+    del.setAttribute('aria-label', name + 'を削除');
+    del.textContent = '×';
+    del.addEventListener('click', () => {
+      const d = loadData();
+      d.staff.splice(idx, 1);
+      delete d.shifts[name];
+      saveData(d);
+      renderStaffList();
+      renderGrid();
+    });
+    tag.appendChild(nameSpan);
+    tag.appendChild(del);
+    container.appendChild(tag);
+  });
+}
+
+function renderGrid() {
+  const data = loadData();
+  const grid = document.getElementById('shift-grid');
+  if (data.staff.length === 0) { grid.innerHTML = '<p class="text-sm text-gray-400">スタッフを追加してください</p>'; return; }
+
+  const table = document.createElement('table');
+  table.className = 'min-w-full text-sm border-collapse';
+
+  const thead = document.createElement('thead');
+  const hrow = document.createElement('tr');
+  const th0 = document.createElement('th');
+  th0.className = 'text-left p-2 text-gray-600 font-semibold border-b';
+  th0.textContent = 'スタッフ';
+  hrow.appendChild(th0);
+  DAYS.forEach((d, i) => {
+    const th = document.createElement('th');
+    th.className = 'p-2 text-gray-600 font-semibold border-b text-center ' + (i >= 5 ? 'text-red-500' : '');
+    th.textContent = d;
+    hrow.appendChild(th);
+  });
+  thead.appendChild(hrow);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  data.staff.forEach(name => {
+    const row = document.createElement('tr');
+    row.className = 'border-b hover:bg-gray-50';
+    const td0 = document.createElement('td');
+    td0.className = 'p-2 font-medium text-gray-700 whitespace-nowrap';
+    td0.textContent = name;
+    row.appendChild(td0);
+    DAYS.forEach((_, di) => {
+      const td = document.createElement('td');
+      td.className = 'p-1 text-center';
+      const sel = document.createElement('select');
+      sel.className = 'border rounded p-1 text-xs w-16 focus:outline-none focus:ring-1 focus:ring-teal-400';
+      sel.setAttribute('aria-label', name + ' ' + DAYS[di] + 'のシフト');
+      SHIFT_TYPES.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t;
+        opt.textContent = t;
+        sel.appendChild(opt);
+      });
+      const saved = data.shifts[name] && data.shifts[name][di] !== undefined ? data.shifts[name][di] : '休';
+      sel.value = saved;
+      sel.addEventListener('change', () => {
+        const d = loadData();
+        if (!d.shifts[name]) d.shifts[name] = {};
+        d.shifts[name][di] = sel.value;
+        saveData(d);
+      });
+      td.appendChild(sel);
+      row.appendChild(td);
+    });
+    tbody.appendChild(row);
+  });
+  table.appendChild(tbody);
+  grid.innerHTML = '';
+  grid.appendChild(table);
+}
+
+function calcFairness() {
+  const data = loadData();
+  if (data.staff.length === 0) { alert('スタッフを登録してください'); return; }
+
+  const stats = data.staff.map(name => {
+    const s = data.shifts[name] || {};
+    let weekend = 0, night = 0, consecutive = 0, maxConsec = 0, cur = 0;
+    DAYS.forEach((_, di) => {
+      const shift = s[di] || '休';
+      if (WEEKEND_IDX.includes(di) && shift !== '休') weekend++;
+      if (shift === '深夜') night++;
+      if (shift !== '休') { cur++; maxConsec = Math.max(maxConsec, cur); } else cur = 0;
+    });
+    consecutive = maxConsec;
+    return { name, weekend, night, consecutive };
+  });
+
+  const avgWeekend = stats.reduce((a, b) => a + b.weekend, 0) / stats.length;
+  const avgNight = stats.reduce((a, b) => a + b.night, 0) / stats.length;
+  const avgConsec = stats.reduce((a, b) => a + b.consecutive, 0) / stats.length;
+
+  const container = document.getElementById('score-cards');
+  container.innerHTML = '';
+  const warnings = [];
+  const suggestions = [];
+
+  stats.forEach(st => {
+    const wDev = Math.abs(st.weekend - avgWeekend);
+    const nDev = Math.abs(st.night - avgNight);
+    const cDev = Math.abs(st.consecutive - avgConsec);
+    const score = Math.max(0, 100 - Math.round(wDev * 15 + nDev * 10 + cDev * 8));
+
+    const card = document.createElement('div');
+    card.className = 'flex items-center gap-4 p-3 rounded-lg border';
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'w-20 font-semibold text-gray-700 text-sm';
+    nameEl.textContent = st.name;
+
+    const details = document.createElement('div');
+    details.className = 'flex-1 grid grid-cols-3 gap-2 text-xs text-gray-600';
+    [['土日出勤', st.weekend + '回'], ['深夜', st.night + '回'], ['最大連続', st.consecutive + '日']].forEach(([l, v]) => {
+      const d = document.createElement('div');
+      const ll = document.createElement('div');
+      ll.className = 'text-gray-400';
+      ll.textContent = l;
+      const vv = document.createElement('div');
+      vv.className = 'font-semibold';
+      vv.textContent = v;
+      d.appendChild(ll);
+      d.appendChild(vv);
+      details.appendChild(d);
+    });
+
+    const scoreEl = document.createElement('div');
+    const color = score >= 80 ? 'text-green-600' : score >= 60 ? 'text-yellow-600' : 'text-red-600';
+    scoreEl.className = 'text-xl font-bold ' + color;
+    scoreEl.textContent = score + 'pt';
+
+    card.appendChild(nameEl);
+    card.appendChild(details);
+    card.appendChild(scoreEl);
+    container.appendChild(card);
+
+    if (st.weekend > avgWeekend + 1) warnings.push(st.name + ': 土日出勤が多すぎます（' + st.weekend + '回 / 平均' + avgWeekend.toFixed(1) + '回）');
+    if (st.night > avgNight + 1) warnings.push(st.name + ': 深夜シフトが多すぎます（' + st.night + '回 / 平均' + avgNight.toFixed(1) + '回）');
+    if (st.consecutive >= 5) warnings.push(st.name + ': 連続勤務' + st.consecutive + '日（要見直し）');
+    if (score < 70) suggestions.push(st.name + 'のシフトを調整することで公平性スコアが改善されます');
+  });
+
+  const warnEl = document.getElementById('warnings');
+  warnEl.innerHTML = '';
+  if (warnings.length > 0) {
+    const title = document.createElement('div');
+    title.className = 'font-semibold text-red-600 mb-2 text-sm';
+    title.textContent = '偏り警告';
+    warnEl.appendChild(title);
+    warnings.forEach(w => {
+      const p = document.createElement('div');
+      p.className = 'text-sm text-red-500 bg-red-50 rounded p-2 mb-1';
+      p.textContent = w;
+      warnEl.appendChild(p);
+    });
+  }
+
+  const sugEl = document.getElementById('suggestions');
+  sugEl.innerHTML = '';
+  if (suggestions.length > 0) {
+    const title = document.createElement('div');
+    title.className = 'font-semibold text-teal-600 mb-2 text-sm mt-2';
+    title.textContent = '最適化提案';
+    sugEl.appendChild(title);
+    suggestions.forEach(s => {
+      const p = document.createElement('div');
+      p.className = 'text-sm text-teal-700 bg-teal-50 rounded p-2 mb-1';
+      p.textContent = s;
+      sugEl.appendChild(p);
+    });
+  }
+
+  document.getElementById('results').classList.remove('hidden');
+}
+
+document.getElementById('add-staff-btn').addEventListener('click', () => {
+  const input = document.getElementById('staff-name');
+  const name = input.value.trim();
+  if (!name) return;
+  const data = loadData();
+  if (data.staff.includes(name)) { alert('同名のスタッフが既に存在します'); return; }
+  data.staff.push(name);
+  saveData(data);
+  input.value = '';
+  renderStaffList();
+  renderGrid();
+});
+
+document.getElementById('staff-name').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('add-staff-btn').click();
+});
+
+document.getElementById('calc-btn').addEventListener('click', calcFairness);
+
+renderStaffList();
+renderGrid();
+</script>
+</body>
+</html>
